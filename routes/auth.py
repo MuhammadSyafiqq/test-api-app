@@ -1,26 +1,28 @@
-from flask import Blueprint, render_template, redirect, url_for, flash, request
+from flask import Blueprint, render_template, redirect, url_for, flash, request, session
 from flask_login import login_user, logout_user, login_required, current_user
+import hashlib,os
 from models.user import User
 from extensions import db
 from flask_dance.contrib.google import make_google_blueprint, google
 
-
 auth_bp = Blueprint('auth', __name__)
 
-# --- Konfigurasi Google OAuth 2.0 ---
+# --- Google OAuth Blueprint ---
 google_bp = make_google_blueprint(
     client_id="822893399626-tb3fmko3v6ue869kqkhd6f4ujfm6jndr.apps.googleusercontent.com",
     client_secret="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",
-    scope=["profile", "email"]
+    scope=["https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "openid"]
 )
 auth_bp.register_blueprint(google_bp, url_prefix="/login")
 
 
-# Route untuk memproses user setelah Google login
+# --- Google login handler ---
 @auth_bp.route('/google')
 def google_login():
     if not google.authorized:
-        return redirect(url_for("auth.google.login"))  # ini otomatis redirect ke Google
+        return redirect(url_for("auth.google.login", prompt="select_account"))
 
     resp = google.get("/oauth2/v2/userinfo")
     if not resp.ok:
@@ -29,10 +31,17 @@ def google_login():
 
     info = resp.json()
     email = info.get("email")
-    user = User.query.filter_by(email=email).first()
 
+     # cek user di DB
+    user = User.query.filter_by(email=email).first()
     if not user:
-        user = User(username=email.split("@")[0], email=email)
+        # buat password random agar kolom NOT NULL terpenuhi
+        random_password = hashlib.sha256(os.urandom(32)).hexdigest()
+        user = User(
+            username=email.split("@")[0],
+            email=email,
+            password_hash=random_password
+        )
         db.session.add(user)
         db.session.commit()
 
@@ -40,12 +49,16 @@ def google_login():
     flash(f'Selamat datang, {user.username}!', 'success')
     return redirect(url_for('practice.dashboard'))
 
+
+# --- Halaman utama ---
 @auth_bp.route('/')
 def index():
     if current_user.is_authenticated:
         return redirect(url_for('practice.dashboard'))
     return render_template('index.html')
 
+
+# --- Register ---
 @auth_bp.route('/register', methods=['GET', 'POST'])
 def register():
     if current_user.is_authenticated:
@@ -57,7 +70,6 @@ def register():
         password = request.form.get('password', '')
         confirm = request.form.get('confirm_password', '')
 
-        # Validasi
         if not username or not email or not password:
             flash('Semua field harus diisi!', 'danger')
             return render_template('auth/register.html')
@@ -78,7 +90,6 @@ def register():
             flash('Email sudah terdaftar!', 'danger')
             return render_template('auth/register.html')
 
-        # Buat user baru
         user = User(username=username, email=email)
         user.set_password(password)
         db.session.add(user)
@@ -89,6 +100,8 @@ def register():
 
     return render_template('auth/register.html')
 
+
+# --- Login biasa ---
 @auth_bp.route('/login', methods=['GET', 'POST'])
 def login():
     if current_user.is_authenticated:
@@ -100,20 +113,26 @@ def login():
         remember = request.form.get('remember', False)
 
         user = User.query.filter_by(username=username).first()
-
         if user and user.check_password(password):
             login_user(user, remember=bool(remember))
             next_page = request.args.get('next')
-            flash(f'Selamat datang, {user.username}! 🎤', 'success')
+            flash(f'Selamat datang, {user.username}!', 'success')
             return redirect(next_page or url_for('practice.dashboard'))
         else:
             flash('Username atau password salah!', 'danger')
 
     return render_template('auth/login.html')
 
+
+# --- Logout ---
 @auth_bp.route('/logout')
 @login_required
 def logout():
     logout_user()
+
+    # Hapus token Google dari Flask-Dance session
+    if "google_oauth_token" in session:
+        del session["google_oauth_token"]
+
     flash('Berhasil logout. Sampai jumpa!', 'info')
     return redirect(url_for('auth.index'))
