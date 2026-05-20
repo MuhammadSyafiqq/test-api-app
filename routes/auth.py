@@ -2,8 +2,45 @@ from flask import Blueprint, render_template, redirect, url_for, flash, request
 from flask_login import login_user, logout_user, login_required, current_user
 from models.user import User
 from extensions import db
+from flask_dance.contrib.google import make_google_blueprint, google
+
 
 auth_bp = Blueprint('auth', __name__)
+
+# --- Konfigurasi Google OAuth 2.0 ---
+google_bp = make_google_blueprint(
+    client_id="822893399626-tb3fmko3v6ue869kqkhd6f4ujfm6jndr.apps.googleusercontent.com",
+    client_secret="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",
+    scope=["profile", "email"],
+    redirect_to="auth.google_login"
+)
+auth_bp.register_blueprint(google_bp, url_prefix="/login")
+
+# --- Login menggunakan Google ---
+@auth_bp.route('/google')
+def google_login():
+    if not google.authorized:
+        return redirect(url_for("auth.google.login"))  # endpoint lengkap blueprint
+
+    resp = google.get("/oauth2/v2/userinfo")
+    if resp.ok:
+        info = resp.json()
+        email = info.get("email")
+
+        # Cek user berdasarkan email
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            # Buat user baru otomatis
+            user = User(username=email.split("@")[0], email=email)
+            db.session.add(user)
+            db.session.commit()
+
+        login_user(user)
+        flash(f'Selamat datang, {user.username}!', 'success')
+        return redirect(url_for('practice.dashboard'))
+
+    flash("Login Google gagal!", "danger")
+    return redirect(url_for('auth.login'))
 
 @auth_bp.route('/')
 def index():
